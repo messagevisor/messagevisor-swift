@@ -1,0 +1,75 @@
+name: Release validation
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.2"
+
+      - name: Validate semantic version tag
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Expected a semantic version tag with a v prefix" >&2
+            exit 1
+          fi
+
+          version="${GITHUB_REF_NAME#v}"
+
+          if ! grep -Fq "from: \"$version\"" README.md; then
+            echo "README installation version does not match $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+          if ! grep -Fq "## $version" CHANGELOG.md; then
+            echo "CHANGELOG does not contain a $version release" >&2
+            exit 1
+          fi
+
+          if ! grep -Fq "messagevisorSwiftVersion = \"$version\"" Sources/MessagevisorCLI/main.swift; then
+            echo "Swift CLI version does not match $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+          echo "Validating Messagevisor Swift $version"
+
+      - name: Set up Swift
+        uses: swift-actions/setup-swift@v2.4.0
+        with:
+          swift-version: "6.2.1"
+
+      - name: Show toolchain versions
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Test
+        run: swift test
+
+      - name: Check Swift 6 concurrency
+        run: make strict-concurrency
+
+      - name: Build release products
+        run: swift build -c release
+
+      - name: Verify clean package consumers
+        run: make verify-consumers

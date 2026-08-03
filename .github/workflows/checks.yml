@@ -1,0 +1,155 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift:
+    name: Swift 6.2.1
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.2"
+
+      - name: Set up Swift
+        uses: swift-actions/setup-swift@v2.4.0
+        with:
+          swift-version: "6.2.1"
+
+      - name: Show toolchain versions
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Build
+        run: swift build
+
+      - name: Check Swift 6 concurrency
+        run: make strict-concurrency
+
+      - name: Test
+        run: swift test
+
+      - name: Release build
+        run: swift build -c release
+
+      - name: Test with Thread Sanitizer
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: swift test --sanitize=thread
+
+  apple-platforms:
+    name: ${{ matrix.name }} compile check
+    runs-on: macos-15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: iOS
+            sdk: iphonesimulator
+            triple: arm64-apple-ios13.0-simulator
+          - name: tvOS
+            sdk: appletvsimulator
+            triple: arm64-apple-tvos13.0-simulator
+          - name: watchOS
+            sdk: watchsimulator
+            triple: arm64-apple-watchos6.0-simulator
+          - name: visionOS
+            sdk: xrsimulator
+            triple: arm64-apple-xros1.0-simulator
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.2"
+
+      - name: Set up Swift
+        uses: swift-actions/setup-swift@v2.4.0
+        with:
+          swift-version: "6.2.1"
+
+      - name: Show toolchain versions
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Compile public libraries
+        run: |
+          for target in Messagevisor MessagevisorICU MessagevisorInterpolation MessagevisorMissingTranslations; do
+            swift build \
+              --target "$target" \
+              --triple "${{ matrix.triple }}" \
+              --sdk "$(xcrun --sdk '${{ matrix.sdk }}' --show-sdk-path)" \
+              --scratch-path "/tmp/messagevisor-${{ matrix.sdk }}-$target"
+          done
+
+  integration:
+    name: Public consumers and project-1
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out Swift SDK
+        uses: actions/checkout@v7
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.2"
+
+      - name: Set up Swift
+        uses: swift-actions/setup-swift@v2.4.0
+        with:
+          swift-version: "6.2.1"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Initialize Messagevisor project-1
+        env:
+          npm_config_yes: "true"
+        run: |
+          mkdir project-1
+          cd project-1
+          npx @messagevisor/cli init --project=1
+
+      - name: Install Messagevisor project-1 dependencies
+        working-directory: project-1
+        run: npm install
+
+      - name: Validate Messagevisor project-1
+        working-directory: project-1
+        run: |
+          npm run lint
+          npm run build
+          npm run test
+
+      - name: Verify clean package consumers
+        run: make verify-consumers
+
+      - name: Run project tests against Swift SDK
+        run: >-
+          swift run messagevisor-swift test --projectDirectoryPath=project-1
+          --onlyFailures --target=swift --normalizeSpaces --withIcuModule
+          --withInterpolationModule
