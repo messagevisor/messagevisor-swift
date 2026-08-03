@@ -4,6 +4,8 @@ Messagevisor's Swift SDK evaluates translations from Messagevisor datafiles in n
 
 The package supports iOS 13+, macOS 10.15+, tvOS 13+, watchOS 6+, and visionOS 1+. It includes the core SDK, ICU-style message formatting, simple interpolation, missing-translation observation, and a project conformance CLI.
 
+Visit [https://messagevisor.com](https://messagevisor.com) for more information.
+
 ## Table of contents <!-- omit in toc -->
 
 - [Installation](#installation)
@@ -12,21 +14,45 @@ The package supports iOS 13+, macOS 10.15+, tvOS 13+, watchOS 6+, and visionOS 1
 - [Datafile fetching](#datafile-fetching)
 - [Recommended modules](#recommended-modules)
 - [Translations](#translations)
+  - [Translating with values](#translating-with-values)
+  - [`t` alias](#t-alias)
+  - [Raw translation](#raw-translation)
+  - [Arbitrary messages](#arbitrary-messages)
 - [Context](#context)
+  - [Initial context](#initial-context)
+  - [Merge context](#merge-context)
+  - [Replace context](#replace-context)
+  - [Per-call context](#per-call-context)
 - [Datafile operations](#datafile-operations)
+  - [Set after initialization](#set-after-initialization)
+  - [Merge by default](#merge-by-default)
+  - [Replace explicitly](#replace-explicitly)
+  - [Loading another locale](#loading-another-locale)
 - [Locales, currency, and time zones](#locales-currency-and-time-zones)
+  - [Active locale](#active-locale)
+  - [Per-call locale](#per-call-locale)
+  - [Direction](#direction)
+  - [Currency](#currency)
+  - [Time zone](#time-zone)
 - [Formatting](#formatting)
+  - [Direct formatter helpers](#direct-formatter-helpers)
+  - [Format precedence](#format-precedence)
 - [Defaults](#defaults)
+  - [Default translations](#default-translations)
+  - [Default formats](#default-formats)
 - [Feature and variation resolvers](#feature-and-variation-resolvers)
 - [Diagnostics](#diagnostics)
 - [Events and snapshots](#events-and-snapshots)
 - [Modules](#modules)
+  - [Setup API](#setup-api)
+  - [Add and remove at runtime](#add-and-remove-at-runtime)
 - [Child instances](#child-instances)
 - [Translation lookup](#translation-lookup)
 - [Closing the SDK](#closing-the-sdk)
 - [Apple platform behavior](#apple-platform-behavior)
 - [Project conformance CLI](#project-conformance-cli)
 - [Development](#development)
+  - [Releasing](#releasing)
 - [License](#license)
 
 <!-- MESSAGEVISOR_DOCS_BEGIN -->
