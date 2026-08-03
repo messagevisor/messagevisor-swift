@@ -55,7 +55,7 @@ jobs:
       - name: Set up Swift
         uses: swift-actions/setup-swift@v2.4.0
         with:
-          swift-version: "6.2.1"
+          swift-version: "6.3.3"
 
       - name: Show toolchain versions
         run: |
