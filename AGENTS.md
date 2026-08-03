@@ -2,7 +2,7 @@
 
 This repository is the native Swift port of Messagevisor for Apple platforms.
 
-Before runtime work, read `/Users/fahad/Projects/messagevisor/PORT.md`. The behavioral source of truth is `/Users/fahad/Projects/messagevisor/messagevisor/packages/sdk`; the real cross-SDK fixture project is `/Users/fahad/Projects/messagevisor/messagevisor/projects/project-1`.
+Before runtime work, read `../PORT.md`. The behavioral source of truth is `../messagevisor/packages/sdk`; the real cross-SDK fixture project is `../messagevisor/projects/project-1`.
 
 Key rules:
 
