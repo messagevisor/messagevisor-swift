@@ -3,7 +3,7 @@ import XCTest
 
 final class MessagevisorCLITests: XCTestCase {
     func testReleaseVersion() {
-        XCTAssertEqual(messagevisorSwiftVersion, "0.1.0")
+        XCTAssertEqual(messagevisorSwiftVersion, "0.2.0")
     }
 
     func testRepeatedAndBooleanOptions() {

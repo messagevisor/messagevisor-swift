@@ -137,4 +137,8 @@ jobs:
         run: >-
           swift run messagevisor-swift test --projectDirectoryPath=project-1
           --onlyFailures --target=swift --normalizeSpaces --withIcuModule
-          --withInterpolationModule
+
+      - name: Verify formatter examples against Swift SDK
+        run: >-
+          swift run messagevisor-swift examples --projectDirectoryPath=project-1
+          --onlyFailures --target=swift --normalizeSpaces --withIcuModule

@@ -7,6 +7,7 @@ public struct MessagevisorFormatPart: Equatable, Sendable {
 }
 
 final class NativeFormatters {
+    let defaultTimeZone = TimeZone.current.identifier
     private let limit = 100
     private var numbers: [String: NumberFormatter] = [:]
     private var dates: [String: DateFormatter] = [:]
@@ -80,81 +81,19 @@ final class NativeFormatters {
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: localeIdentifier)
         formatter.timeZone = TimeZone(identifier: resolved["timeZone"]?.stringValue ?? timeZone ?? TimeZone.current.identifier)
         if let calendar = resolved["calendar"]?.stringValue { formatter.calendar = Calendar(identifier: calendarIdentifier(calendar)) }
-        let styleKey = kind == "time" ? "timeStyle" : "dateStyle"
-        if let style = resolved[styleKey]?.stringValue {
-            let mapped = formatterStyle(style)
-            if kind == "time" { formatter.timeStyle = mapped; formatter.dateStyle = .none }
-            else { formatter.dateStyle = mapped; formatter.timeStyle = .none }
-        } else {
-            let template = dateTemplate(resolved, kind: kind)
-            formatter.setLocalizedDateFormatFromTemplate(template.isEmpty ? (kind == "time" ? "jmm" : "yMd") : template)
-        }
+        configureMessagevisorDateFormatter(formatter, options: resolved, kind: kind)
         return insert(formatter, key: cacheKey, values: &dates, order: &dateOrder)
     }
 
-    private func formatterStyle(_ value: String) -> DateFormatter.Style {
-        switch value { case "full": return .full; case "long": return .long; case "medium": return .medium; default: return .short }
-    }
-
-    private func dateTemplate(_ options: FormatOptions, kind: String) -> String {
-        var result = ""
-        let add: (String, String, String, String, String) -> Void = { key, numeric, long, short, narrow in
-            guard let value = options[key]?.stringValue else { return }
-            result += value == "2-digit" ? numeric + numeric : value == "numeric" ? numeric : value == "long" ? long : value == "short" ? short : narrow
-        }
-        if kind == "date" {
-            add("weekday", "E", "EEEE", "EEE", "EEEEE"); add("era", "G", "GGGG", "GGG", "GGGGG")
-            add("year", "y", "y", "y", "y"); add("month", "M", "MMMM", "MMM", "MMMMM")
-            add("day", "d", "d", "d", "d")
-        } else {
-            let hour: String
-            switch options["hourCycle"]?.stringValue {
-            case "h11": hour = "K"
-            case "h12": hour = "h"
-            case "h23": hour = "H"
-            case "h24": hour = "k"
-            default: hour = options["hour12"]?.boolValue == false ? "H" : options["hour12"]?.boolValue == true ? "h" : "j"
-            }
-            if options["hour"] != nil { result += options["hour"]?.stringValue == "2-digit" ? hour + hour : hour }
-            add("minute", "m", "m", "m", "m"); add("second", "s", "s", "s", "s")
-            if let digits = options["fractionalSecondDigits"]?.numberValue { result += String(repeating: "S", count: Int(digits)) }
-            if options["timeZoneName"] != nil { result += "z" }
-        }
-        return result
-    }
 
     private func calendarIdentifier(_ value: String) -> Calendar.Identifier {
         switch value { case "buddhist": return .buddhist; case "japanese": return .japanese; case "islamic": return .islamic; case "iso8601": return .iso8601; default: return .gregorian }
     }
 }
 
-func mergeFormats(_ parent: FormatPresets?, _ child: FormatPresets?) -> FormatPresets {
+func mergeFormats(_ parent: FormatPresets?, _ child: FormatPresets?, replacePresets: Bool = false) -> FormatPresets {
     func merge(_ a: [String: FormatOptions]?, _ b: [String: FormatOptions]?) -> [String: FormatOptions]? {
-        guard a != nil || b != nil else { return nil }; return (a ?? [:]).merging(b ?? [:]) { old, new in old.merging(new) { _, value in value } }
+        guard a != nil || b != nil else { return nil }; return (a ?? [:]).merging(b ?? [:]) { old, new in replacePresets ? new : old.merging(new) { _, value in value } }
     }
     return .init(number: merge(parent?.number, child?.number), date: merge(parent?.date, child?.date), time: merge(parent?.time, child?.time), relative: merge(parent?.relative, child?.relative), dateTimeRange: merge(parent?.dateTimeRange, child?.dateTimeRange))
-}
-
-func pluralCategory(_ value: Double, locale: String, ordinal: Bool = false) -> String {
-    if ordinal, locale.lowercased().hasPrefix("en") {
-        let integer = Int(value), mod10 = integer % 10, mod100 = integer % 100
-        if mod10 == 1 && mod100 != 11 { return "one" }
-        if mod10 == 2 && mod100 != 12 { return "two" }
-        if mod10 == 3 && mod100 != 13 { return "few" }
-        return "other"
-    }
-    let language = locale.split(separator: "-").first.map(String.init)?.lowercased() ?? locale.lowercased()
-    switch language {
-    case "fr", "pt": return value == 0 || value == 1 ? "one" : "other"
-    case "ru", "uk":
-        let n = Int(value), mod10 = n % 10, mod100 = n % 100
-        if mod10 == 1 && mod100 != 11 { return "one" }
-        if (2...4).contains(mod10) && !(12...14).contains(mod100) { return "few" }
-        if mod10 == 0 || (5...9).contains(mod10) || (11...14).contains(mod100) { return "many" }
-        return "other"
-    case "ar":
-        let n = Int(value); if n == 0 { return "zero" }; if n == 1 { return "one" }; if n == 2 { return "two" }
-        if (3...10).contains(n % 100) { return "few" }; if (11...99).contains(n % 100) { return "many" }; return "other"
-    default: return value == 1 ? "one" : "other"
-    }
 }

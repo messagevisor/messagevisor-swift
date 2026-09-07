@@ -21,6 +21,10 @@ private struct ParentSubscription: Sendable { let id: UUID; let unsubscribe: Mes
 private final class CallbackState: @unchecked Sendable {
     var active = true
 }
+private final class WeakInstance {
+    weak var value: Messagevisor?
+    init(_ value: Messagevisor) { self.value = value }
+}
 
 public final class Messagevisor: @unchecked Sendable {
     private let storage: SharedStorage
@@ -38,6 +42,9 @@ public final class Messagevisor: @unchecked Sendable {
     private var modules: [MessagevisorModule] = []
     private var moduleSubscriptions: [ModuleDiagnosticSubscription] = []
     private var moduleApis: [UUID: MessagevisorModuleApi] = [:]
+    private var moduleStates: [UUID: CallbackState] = [:]
+    private let childID = UUID()
+    private var children: [UUID: WeakInstance] = [:]
     private var moduleFlagResolvers: [ModuleFlagResolver] = []
     private var moduleVariationResolvers: [ModuleVariationResolver] = []
     private var pendingModuleCleanupTasks: [Task<Void, Never>] = []
@@ -52,15 +59,16 @@ public final class Messagevisor: @unchecked Sendable {
     private var observedParentDirection: String?
 
     public init(options: MessagevisorOptions = .init()) {
-        storage = SharedStorage(); context = options.context; locale = options.locale
+        storage = SharedStorage(); context = options.context
+        locale = options.datafile == nil && options.datafileJSON == nil ? options.locale : nil
         currency = options.currency; timeZone = options.timeZone
         ownFlagResolver = options.resolveFlag; ownVariationResolver = options.resolveVariation
         hasOwnFlagResolver = options.resolveFlag != nil; hasOwnVariationResolver = options.resolveVariation != nil
         diagnosticHandler = options.onDiagnostic; logLevel = options.logLevel
         storage.defaultTranslations = options.defaultTranslations; storage.defaultFormats = options.defaultFormats
-        for module in options.modules { _ = addModule(module) }
         if let datafile = options.datafile { setDatafile(datafile) }
         else if let json = options.datafileJSON { setDatafile(json) }
+        for module in options.modules { _ = addModule(module) }
         report(.init(level: .info, code: "sdk_initialized", message: "SDK initialized"))
     }
 
@@ -77,7 +85,10 @@ public final class Messagevisor: @unchecked Sendable {
 
     public func spawn(context: MessagevisorContext = [:], options: SpawnOptions = .init()) -> MessagevisorChild {
         storage.lock.lock(); defer { storage.lock.unlock() }
-        return MessagevisorChild(instance: Messagevisor(parent: self, context: context, options: options))
+        let child = Messagevisor(parent: self, context: context, options: options)
+        children = children.filter { $0.value.value != nil }
+        children[child.childID] = WeakInstance(child)
+        return MessagevisorChild(instance: child)
     }
 
     public func subscribe(_ callback: @escaping @Sendable () -> Void) -> MessagevisorUnsubscribe {
@@ -155,13 +166,14 @@ public final class Messagevisor: @unchecked Sendable {
             report(.init(level: .error, code: "duplicate_module", message: "Duplicate module name", moduleName: name))
             return {}
         }
+        moduleStates[module.id] = CallbackState()
         do { try module.setup?(moduleApi(for: module)) }
         catch {
             clearModuleResources(module)
-            report(.init(level: .error, code: "module_setup_error", message: "Module setup failed", moduleName: module.name, originalError: error.localizedDescription))
             if module.close != nil {
                 pendingModuleCleanupTasks.append(Task { [weak self] in try? await self?.closeModule(module) })
             }
+            report(.init(level: .error, code: "module_setup_error", message: "Module setup failed", moduleName: module.name, originalError: error.localizedDescription))
             return {}
         }
         modules.append(module)
@@ -223,8 +235,9 @@ public final class Messagevisor: @unchecked Sendable {
     public func setDatafile(_ incoming: DatafileContent, replace: Bool = false) {
         guard parent == nil else { return }
         storage.lock.withLock {
-            guard !incoming.locale.isEmpty else {
-                report(.init(level: .error, code: "invalid_datafile", message: "could not parse datafile", originalError: "Datafile must include locale.")); return
+            guard incoming.schemaVersion == "1", !incoming.locale.isEmpty,
+                  incoming.direction == nil || ["ltr", "rtl"].contains(incoming.direction!) else {
+                report(.init(level: .error, code: "invalid_datafile", message: "could not parse datafile", originalError: "Invalid datafile identity or direction.")); return
             }
             let old = getSnapshot(), previousLocale = locale
             let stored = !replace && storage.datafiles[incoming.locale] != nil ? mergeDatafile(storage.datafiles[incoming.locale]!, incoming) : incoming
@@ -236,7 +249,10 @@ public final class Messagevisor: @unchecked Sendable {
 
     public func setLocale(_ value: String) throws {
         try storage.lock.withLock {
-            guard storage.datafiles[value] != nil else { throw MessagevisorError("Datafile not found for locale: \(value)") }
+            guard storage.datafiles[value] != nil else {
+                report(.init(level: .error, code: "missing_datafile", message: "Datafile not found for locale", details: ["locale": .string(value)]))
+                throw MessagevisorError("Datafile not found for locale: \(value)")
+            }
             let old = getSnapshot(), previous = locale; locale = value
             emit(.localeSet, old, .localeSet(locale: value, previousLocale: previous))
         }
@@ -285,7 +301,7 @@ public final class Messagevisor: @unchecked Sendable {
             let datafile = storage.datafiles[resolved.locale]
             let meta = datafile?.messages[messageKey]?.meta
             let formats = evaluationFormats(options.evaluation, locale: resolved.locale)
-            let payload = MessagevisorFormatPayload(translation: resolved.translation, values: values, locale: resolved.locale, source: .translation, messageKey: messageKey, meta: meta, formats: formats, moduleOptions: options.moduleOptions, currency: options.currency, timeZone: options.timeZone)
+            let payload = MessagevisorFormatPayload(translation: resolved.translation, values: values, locale: resolved.locale, source: .translation, messageKey: messageKey, meta: meta, formats: formats, moduleOptions: options.moduleOptions, currency: options.currency ?? currency, timeZone: options.timeZone ?? timeZone ?? storage.formatters.defaultTimeZone)
             return try runModules(payload)
         }
     }
@@ -297,7 +313,7 @@ public final class Messagevisor: @unchecked Sendable {
     public func formatMessage(_ message: String, values: MessagevisorValues = [:], options: EvaluationOptions = .init()) throws -> String {
         try storage.lock.withLock {
             let selected = try currentLocale(options.locale)
-            let payload = MessagevisorFormatPayload(translation: message, values: values, locale: selected, source: .formatMessage, messageKey: nil, meta: nil, formats: evaluationFormats(options, locale: selected), moduleOptions: options.moduleOptions, currency: options.currency, timeZone: options.timeZone)
+            let payload = MessagevisorFormatPayload(translation: message, values: values, locale: selected, source: .formatMessage, messageKey: nil, meta: nil, formats: evaluationFormats(options, locale: selected), moduleOptions: options.moduleOptions, currency: options.currency ?? currency, timeZone: options.timeZone ?? timeZone ?? storage.formatters.defaultTimeZone)
             return try runModules(payload)
         }
     }
@@ -332,8 +348,11 @@ public final class Messagevisor: @unchecked Sendable {
         try storage.lock.withLock {
             let selected = try currentLocale(options.locale), formats = evaluationFormats(options, locale: selected)
             let formatOptions = try named(preset, type: "dateTimeRange", values: formats.dateTimeRange, locale: selected)
-            try validateTimeZone(formatOptions["timeZone"]?.stringValue ?? options.timeZone ?? timeZone, type: "dateTimeRange", locale: selected, options: formatOptions)
-            let formatter = DateIntervalFormatter(); formatter.locale = Locale(identifier: selected); formatter.timeZone = TimeZone(identifier: options.timeZone ?? timeZone ?? TimeZone.current.identifier)
+            let zone = options.timeZone ?? formatOptions["timeZone"]?.stringValue ?? timeZone ?? storage.formatters.defaultTimeZone
+            try validateTimeZone(zone, type: "dateTimeRange", locale: selected, options: formatOptions)
+            try validateDate(start, type: "dateTimeRange", locale: selected, options: formatOptions)
+            try validateDate(end, type: "dateTimeRange", locale: selected, options: formatOptions)
+            let formatter = DateIntervalFormatter(); formatter.locale = Locale(identifier: selected); formatter.timeZone = TimeZone(identifier: zone)
             if let style = formatOptions["dateStyle"]?.stringValue { formatter.dateStyle = dateStyle(style) }
             if let style = formatOptions["timeStyle"]?.stringValue { formatter.timeStyle = dateStyle(style) }
             return formatter.string(from: start, to: end)
@@ -344,6 +363,7 @@ public final class Messagevisor: @unchecked Sendable {
         try storage.lock.withLock {
             let selected = try currentLocale(options.locale), formats = evaluationFormats(options, locale: selected)
             let formatOptions = try named(preset, type: "relative", values: formats.relative, locale: selected)
+            guard relativeInterval(value, unit).isFinite else { try invalidFormat(type: "relative", locale: selected, options: formatOptions, reason: "Relative time must be finite") }
             let formatter = RelativeDateTimeFormatter(); formatter.locale = Locale(identifier: selected)
             formatter.unitsStyle = formatOptions["style"]?.stringValue == "short" ? .short : formatOptions["style"]?.stringValue == "narrow" ? .abbreviated : .full
             return formatter.localizedString(fromTimeInterval: relativeInterval(value, unit))
@@ -353,9 +373,16 @@ public final class Messagevisor: @unchecked Sendable {
         reportSimplifiedParts("formatRelativeTimeToParts", locale: options.locale)
         return [.init(type: "literal", value: try formatRelativeTime(value, unit: unit, preset: preset, options: options))]
     }
-    public func formatPlural(_ value: Double, locale: String? = nil, ordinal: Bool = false) throws -> String { try storage.lock.withLock { pluralCategory(value, locale: try currentLocale(locale), ordinal: ordinal) } }
+    public func formatPlural(_ value: Double, locale: String? = nil, ordinal: Bool = false) throws -> String { try storage.lock.withLock { try messagevisorPluralCategory(value, locale: currentLocale(locale), ordinal: ordinal) } }
     public func formatPlural(_ value: Double, formatOptions: FormatOptions, locale: String? = nil) throws -> String {
-        try formatPlural(value, locale: locale ?? formatOptions["locale"]?.stringValue, ordinal: formatOptions["type"]?.stringValue == "ordinal")
+        try storage.lock.withLock {
+            let selected = try currentLocale(locale ?? formatOptions["locale"]?.stringValue)
+            for key in ["roundingPriority", "roundingIncrement", "roundingMode", "trailingZeroDisplay"] where formatOptions[key] != nil {
+                report(.init(level: .warn, code: "unsupported_formatter", message: "Plural rounding option is not supported", details: ["formatter": .string("formatPlural"), "option": .string(key), "locale": .string(selected)]))
+            }
+            do { return try messagevisorPluralCategory(value, locale: selected, ordinal: formatOptions["type"]?.stringValue == "ordinal", options: formatOptions) }
+            catch { try invalidFormat(type: "plural", locale: selected, options: formatOptions, reason: error.localizedDescription) }
+        }
     }
     public func formatList(_ values: [String], locale: String? = nil) throws -> String {
         try storage.lock.withLock {
@@ -371,14 +398,15 @@ public final class Messagevisor: @unchecked Sendable {
         return try formatList(values, locale: selected)
     }
     public func formatListToParts(_ values: [String], locale: String? = nil) throws -> [MessagevisorFormatPart] {
+        let result = try formatList(values, locale: locale)
         reportSimplifiedParts("formatListToParts", locale: locale)
-        return values.map { .init(type: "element", value: $0) }
+        return [.init(type: "literal", value: result)]
     }
     public func formatListToParts(_ values: [String], formatOptions: FormatOptions, locale: String? = nil) throws -> [MessagevisorFormatPart] {
         let selected = locale ?? formatOptions["locale"]?.stringValue
-        _ = try formatList(values, formatOptions: formatOptions, locale: selected)
+        let result = try formatList(values, formatOptions: formatOptions, locale: selected)
         reportSimplifiedParts("formatListToParts", locale: selected)
-        return values.map { .init(type: "element", value: $0) }
+        return [.init(type: "literal", value: result)]
     }
     public func formatDisplayName(_ value: String, type: String, locale: String? = nil) throws -> String? {
         try storage.lock.withLock {
@@ -402,7 +430,9 @@ public final class Messagevisor: @unchecked Sendable {
             closed = true; emitter.clear(); moduleSubscriptions.removeAll(); moduleApis.removeAll()
             let subscriptions = parentSubscriptions.map(\.unsubscribe); parentSubscriptions.removeAll()
             let tasks = pendingModuleCleanupTasks; pendingModuleCleanupTasks.removeAll()
-            let owned = parent == nil ? Array(modules.reversed()) : []; modules.removeAll()
+            let owned = parent == nil ? Array(modules.reversed()) : []
+            owned.forEach(clearModuleResources); modules.removeAll()
+            parent?.children.removeValue(forKey: childID)
             let task = Task { [weak self] in
                 subscriptions.forEach { $0() }
                 for task in tasks { await task.value }
@@ -418,6 +448,8 @@ public final class Messagevisor: @unchecked Sendable {
                 }
                 self?.storage.lock.withLock { self?.closeErrors = errors }
             }
+            // Publish while holding the shared lock. Even if the task starts immediately,
+            // a close request from its callbacks cannot enter until this assignment completes.
             closeTask = task
             return task
         }
@@ -467,7 +499,7 @@ public final class Messagevisor: @unchecked Sendable {
             number[key] = value
         }
         formats.number = number
-        let selectedTimeZone = options.timeZone ?? timeZone ?? TimeZone.current.identifier
+        let selectedTimeZone = options.timeZone ?? timeZone ?? storage.formatters.defaultTimeZone
         var date = formats.date ?? [:]
         for key in Array(date.keys) { var value = date[key] ?? [:]; value["timeZone"] = .string(options.timeZone ?? value["timeZone"]?.stringValue ?? selectedTimeZone); date[key] = value }
         formats.date = date
@@ -485,12 +517,18 @@ public final class Messagevisor: @unchecked Sendable {
         for module in activeModules() where module.format != nil {
             var payload = initial; payload.translation = current
             do { if let next = try module.format!(payload, moduleApi(for: module)) { current = next } }
-            catch { report(.init(level: .error, code: "invalid_message", message: "Unable to format message", details: ["locale": .string(initial.locale), "messageKey": initial.messageKey.map(MessagevisorValue.string) ?? .null, "source": .string(initial.source.rawValue)], originalError: error.localizedDescription)); throw error }
+            catch { reportModuleFailure(error, module: module, hook: "format", payload: initial); throw error }
         }
         for module in activeModules() where module.transform != nil {
-            if let next = try module.transform!(.init(translation: current, locale: initial.locale, source: initial.source, messageKey: initial.messageKey, meta: initial.meta), moduleApi(for: module)) { current = next }
+            do {
+                if let next = try module.transform!(.init(translation: current, locale: initial.locale, source: initial.source, messageKey: initial.messageKey, meta: initial.meta), moduleApi(for: module)) { current = next }
+            } catch { reportModuleFailure(error, module: module, hook: "transform", payload: initial); throw error }
         }
         return current
+    }
+
+    private func reportModuleFailure(_ error: Error, module: MessagevisorModule, hook: String, payload: MessagevisorFormatPayload) {
+        report(.init(level: .error, code: "invalid_message", message: "Unable to \(hook) message", details: ["locale": .string(payload.locale), "messageKey": payload.messageKey.map(MessagevisorValue.string) ?? .null, "source": .string(payload.source.rawValue), "hook": .string(hook)], moduleName: module.name, originalError: error.localizedDescription))
     }
 
     private func activeModules() -> [MessagevisorModule] { parent?.activeModules() ?? modules }
@@ -500,26 +538,40 @@ public final class Messagevisor: @unchecked Sendable {
 
     private func moduleApi(for module: MessagevisorModule) -> MessagevisorModuleApi {
         let owner = root(); if let api = moduleApis[module.id] { return api }
+        let moduleID = module.id, moduleName = module.name
+        let state = owner.moduleStates[moduleID] ?? CallbackState()
+        if owner.moduleStates[moduleID] == nil { state.active = false }
         let api = MessagevisorModuleApi(
-            setFlagResolver: { [weak owner] resolver in owner?.storage.lock.withLock { owner?.moduleFlagResolvers.removeAll { $0.moduleID == module.id }; if let resolver { owner?.moduleFlagResolvers.append(.init(moduleID: module.id, resolver: resolver)) } } },
-            setVariationResolver: { [weak owner] resolver in owner?.storage.lock.withLock { owner?.moduleVariationResolvers.removeAll { $0.moduleID == module.id }; if let resolver { owner?.moduleVariationResolvers.append(.init(moduleID: module.id, resolver: resolver)) } } },
+            setFlagResolver: { [weak owner] resolver in owner?.storage.lock.withLock { guard state.active else { return }; owner?.moduleFlagResolvers.removeAll { $0.moduleID == moduleID }; if let resolver { owner?.moduleFlagResolvers.append(.init(moduleID: moduleID, resolver: resolver)) } } },
+            setVariationResolver: { [weak owner] resolver in owner?.storage.lock.withLock { guard state.active else { return }; owner?.moduleVariationResolvers.removeAll { $0.moduleID == moduleID }; if let resolver { owner?.moduleVariationResolvers.append(.init(moduleID: moduleID, resolver: resolver)) } } },
             getRevision: { [weak self] locale in guard let self else { throw MessagevisorError("Messagevisor instance no longer exists") }; return try self.getRevision(locale: locale) },
             onDiagnostic: { [weak self] handler, options in
                 guard let self else { return {} }
                 let id = UUID()
                 self.storage.lock.withLock {
-                    self.moduleSubscriptions.append(.init(id: id, moduleID: module.id, handler: handler, logLevel: options.logLevel))
+                    guard state.active, !self.closed else { return }
+                    self.moduleSubscriptions.append(.init(id: id, moduleID: moduleID, handler: handler, logLevel: options.logLevel))
                 }
                 return { [weak self] in self?.storage.lock.withLock { self?.moduleSubscriptions.removeAll { $0.id == id } } }
             },
-            reportDiagnostic: { [weak self] diagnostic in self?.report(.init(level: diagnostic.level, code: diagnostic.code, message: diagnostic.message, details: diagnostic.details, module: module.name, originalError: diagnostic.originalError), sourceModuleID: module.id) }
+            reportDiagnostic: { [weak self] diagnostic in self?.storage.lock.withLock {
+                guard state.active, self?.closed == false else { return }
+                self?.report(.init(level: diagnostic.level, code: diagnostic.code, message: diagnostic.message, details: diagnostic.details, module: moduleName, originalError: diagnostic.originalError), sourceModuleID: moduleID)
+            } }
         )
         moduleApis[module.id] = api; return api
     }
 
     private func clearModuleResources(_ module: MessagevisorModule) {
-        moduleSubscriptions.removeAll { $0.moduleID == module.id }; moduleFlagResolvers.removeAll { $0.moduleID == module.id }
-        moduleVariationResolvers.removeAll { $0.moduleID == module.id }; moduleApis.removeValue(forKey: module.id)
+        moduleStates.removeValue(forKey: module.id)?.active = false
+        clearLocalModuleResources(module.id)
+        for child in children.values { child.value?.clearLocalModuleResources(module.id) }
+        children = children.filter { $0.value.value != nil }
+    }
+
+    private func clearLocalModuleResources(_ moduleID: UUID) {
+        moduleSubscriptions.removeAll { $0.moduleID == moduleID }; moduleFlagResolvers.removeAll { $0.moduleID == moduleID }
+        moduleVariationResolvers.removeAll { $0.moduleID == moduleID }; moduleApis.removeValue(forKey: moduleID)
     }
 
     private func closeModule(_ module: MessagevisorModule) async throws {
@@ -557,7 +609,7 @@ public final class Messagevisor: @unchecked Sendable {
 
     private func named(_ preset: String?, type: String, values: [String: FormatOptions]?, locale: String) throws -> FormatOptions {
         guard let preset else { return [:] }
-        guard let value = values?[preset] else { report(.init(level: .error, code: "missing_format", message: "Named format preset not found", details: ["locale": .string(locale), "type": .string(type), "preset": .string(preset)])); throw MessagevisorError("Named format preset not found: \(type).\(preset)") }
+        guard let value = values?[preset] else { report(.init(level: .error, code: "missing_format", message: "Named format preset not found", details: ["locale": .string(locale), "type": .string(type), "preset": .string(preset)])); return [:] }
         return value
     }
 
@@ -568,11 +620,18 @@ public final class Messagevisor: @unchecked Sendable {
     }
 
     private func formatDateValue(_ value: Date, type: String, preset: String?, options: EvaluationOptions) throws -> String {
+        storage.lock.lock(); defer { storage.lock.unlock() }
         let selected = try currentLocale(options.locale), formats = evaluationFormats(options, locale: selected)
         let values = type == "date" ? formats.date : formats.time
         let formatOptions = try named(preset, type: type, values: values, locale: selected)
-        try validateTimeZone(formatOptions["timeZone"]?.stringValue ?? options.timeZone ?? timeZone, type: type, locale: selected, options: formatOptions)
-        return storage.formatters.date(locale: selected, options: formatOptions, timeZone: options.timeZone ?? timeZone, kind: type).string(from: value)
+        let zone = options.timeZone ?? formatOptions["timeZone"]?.stringValue ?? timeZone ?? storage.formatters.defaultTimeZone
+        try validateTimeZone(zone, type: type, locale: selected, options: formatOptions)
+        try validateDate(value, type: type, locale: selected, options: formatOptions)
+        return storage.formatters.date(locale: selected, options: formatOptions, timeZone: zone, kind: type).string(from: value)
+    }
+
+    private func validateDate(_ value: Date, type: String, locale: String, options: FormatOptions) throws {
+        guard value.timeIntervalSince1970.isFinite else { try invalidFormat(type: type, locale: locale, options: options, reason: "Date must be finite") }
     }
 
     private func formatNumberValue(_ value: Double, formatOptions: FormatOptions, locale: String, currency: String?) throws -> String {
@@ -623,7 +682,7 @@ public final class Messagevisor: @unchecked Sendable {
 public func createMessagevisor(_ options: MessagevisorOptions = .init()) -> Messagevisor { Messagevisor(options: options) }
 
 private func mergeDatafile(_ old: DatafileContent, _ new: DatafileContent) -> DatafileContent {
-    .init(schemaVersion: new.schemaVersion, messagevisorVersion: new.messagevisorVersion, revision: new.revision, target: new.target, locale: new.locale, direction: new.direction ?? old.direction, formats: new.formats, segments: old.segments.merging(new.segments) { _, value in value }, messages: old.messages.merging(new.messages) { _, value in value }, translations: old.translations.merging(new.translations) { _, value in value })
+    .init(schemaVersion: new.schemaVersion, messagevisorVersion: new.messagevisorVersion, revision: new.revision, target: new.target, locale: new.locale, direction: new.direction ?? old.direction, formats: old.formats == nil && new.formats == nil ? nil : mergeFormats(old.formats, new.formats, replacePresets: true), segments: old.segments.merging(new.segments) { _, value in value }, messages: old.messages.merging(new.messages) { _, value in value }, translations: old.translations.merging(new.translations) { _, value in value })
 }
 
 private func relativeInterval(_ value: Double, _ unit: Calendar.Component) -> TimeInterval {

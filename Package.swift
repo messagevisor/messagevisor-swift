@@ -28,7 +28,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MessagevisorTests",
-            dependencies: ["Messagevisor"],
+            dependencies: ["Messagevisor", "MessagevisorICU"],
             resources: [.copy("Resources/conformance/sdk-v1.json")]
         ),
         .testTarget(name: "MessagevisorInterpolationTests", dependencies: ["Messagevisor", "MessagevisorInterpolation"]),

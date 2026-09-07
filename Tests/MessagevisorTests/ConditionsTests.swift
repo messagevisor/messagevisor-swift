@@ -2,6 +2,32 @@ import XCTest
 @testable import Messagevisor
 
 final class ConditionsTests: XCTestCase {
+    func testAuthoredNullSurvivesDecodingEncodingAndOverrideSelection() throws {
+        let json = #"{"attribute":"value","operator":"equals","value":null}"#
+        let condition = try JSONDecoder().decode(Condition.self, from: Data(json.utf8))
+        let predicate = try JSONDecoder().decode(ConditionPredicate.self, from: Data(json.utf8))
+        XCTAssertEqual(predicate.value, .null)
+        let omitted = try JSONDecoder().decode(ConditionPredicate.self, from: Data(#"{"attribute":"value","operator":"equals"}"#.utf8))
+        XCTAssertNil(omitted.value)
+        XCTAssertNotEqual(predicate, omitted)
+        for original in [predicate, omitted] {
+            XCTAssertEqual(try JSONDecoder().decode(ConditionPredicate.self, from: JSONEncoder().encode(original)), original)
+        }
+        for tested in [condition, .string(json)] {
+            XCTAssertTrue(evaluateCondition(tested, provider: .init(context: ["value": .null])))
+            XCTAssertFalse(evaluateCondition(tested, provider: .init()))
+            XCTAssertFalse(evaluateCondition(tested, provider: .init(context: ["value": .string("null")])))
+            let datafile = DatafileContent(locale: "en", messages: ["message": .init(overrides: [.init(key: "null", conditions: tested, translation: "Explicit null")])], translations: ["message": "Missing"])
+            let sdk = createMessagevisor(.init(datafileJSON: try datafile.toJSON(), logLevel: .fatal))
+            XCTAssertEqual(try sdk.translate("message"), "Missing")
+            sdk.setContext(["value": .null])
+            XCTAssertEqual(try sdk.translate("message"), "Explicit null")
+        }
+        let notEquals = try JSONDecoder().decode(Condition.self, from: Data(#"{"attribute":"value","operator":"notEquals","value":null}"#.utf8))
+        XCTAssertFalse(evaluateCondition(notEquals, provider: .init(context: ["value": .null])))
+        XCTAssertTrue(evaluateCondition(notEquals, provider: .init()))
+    }
+
     private func match(_ predicate: ConditionPredicate, _ context: MessagevisorContext) -> Bool {
         evaluateCondition(.predicate(predicate), provider: .init(context: context))
     }
