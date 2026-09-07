@@ -19,7 +19,7 @@ verify-consumers:
 
 test-project-1:
 	swift test
-	swift run messagevisor-swift test --projectDirectoryPath=$(abspath $(PROJECT_1)) --onlyFailures --target=swift --normalizeSpaces --withIcuModule --withInterpolationModule
+	swift run messagevisor-swift test --projectDirectoryPath=$(abspath $(PROJECT_1)) --onlyFailures --target=swift --normalizeSpaces --withIcuModule
 
 examples-project-1:
-	swift run messagevisor-swift examples --projectDirectoryPath=$(abspath $(PROJECT_1)) --target=swift --onlyFailures --normalizeSpaces --withIcuModule --withInterpolationModule
+	swift run messagevisor-swift examples --projectDirectoryPath=$(abspath $(PROJECT_1)) --target=swift --onlyFailures --normalizeSpaces --withIcuModule

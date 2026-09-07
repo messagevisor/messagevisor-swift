@@ -14,45 +14,45 @@ Visit [https://messagevisor.com](https://messagevisor.com) for more information.
 - [Datafile fetching](#datafile-fetching)
 - [Recommended modules](#recommended-modules)
 - [Translations](#translations)
-  - [Translating with values](#translating-with-values)
-  - [`t` alias](#t-alias)
-  - [Raw translation](#raw-translation)
-  - [Arbitrary messages](#arbitrary-messages)
+    - [Translating with values](#translating-with-values)
+    - [`t` alias](#t-alias)
+    - [Raw translation](#raw-translation)
+    - [Arbitrary messages](#arbitrary-messages)
 - [Context](#context)
-  - [Initial context](#initial-context)
-  - [Merge context](#merge-context)
-  - [Replace context](#replace-context)
-  - [Per-call context](#per-call-context)
+    - [Initial context](#initial-context)
+    - [Merge context](#merge-context)
+    - [Replace context](#replace-context)
+    - [Per-call context](#per-call-context)
 - [Datafile operations](#datafile-operations)
-  - [Set after initialization](#set-after-initialization)
-  - [Merge by default](#merge-by-default)
-  - [Replace explicitly](#replace-explicitly)
-  - [Loading another locale](#loading-another-locale)
+    - [Set after initialization](#set-after-initialization)
+    - [Merge by default](#merge-by-default)
+    - [Replace explicitly](#replace-explicitly)
+    - [Loading another locale](#loading-another-locale)
 - [Locales, currency, and time zones](#locales-currency-and-time-zones)
-  - [Active locale](#active-locale)
-  - [Per-call locale](#per-call-locale)
-  - [Direction](#direction)
-  - [Currency](#currency)
-  - [Time zone](#time-zone)
+    - [Active locale](#active-locale)
+    - [Per-call locale](#per-call-locale)
+    - [Direction](#direction)
+    - [Currency](#currency)
+    - [Time zone](#time-zone)
 - [Formatting](#formatting)
-  - [Direct formatter helpers](#direct-formatter-helpers)
-  - [Format precedence](#format-precedence)
+    - [Direct formatter helpers](#direct-formatter-helpers)
+    - [Format precedence](#format-precedence)
 - [Defaults](#defaults)
-  - [Default translations](#default-translations)
-  - [Default formats](#default-formats)
+    - [Default translations](#default-translations)
+    - [Default formats](#default-formats)
 - [Feature and variation resolvers](#feature-and-variation-resolvers)
 - [Diagnostics](#diagnostics)
 - [Events and snapshots](#events-and-snapshots)
 - [Modules](#modules)
-  - [Setup API](#setup-api)
-  - [Add and remove at runtime](#add-and-remove-at-runtime)
+    - [Setup API](#setup-api)
+    - [Add and remove at runtime](#add-and-remove-at-runtime)
 - [Child instances](#child-instances)
 - [Translation lookup](#translation-lookup)
 - [Closing the SDK](#closing-the-sdk)
 - [Apple platform behavior](#apple-platform-behavior)
 - [Project conformance CLI](#project-conformance-cli)
 - [Development](#development)
-  - [Releasing](#releasing)
+    - [Releasing](#releasing)
 - [License](#license)
 
 <!-- MESSAGEVISOR_DOCS_BEGIN -->
@@ -302,11 +302,11 @@ JSON strings are accepted as well:
 m.setDatafile(datafileJSON)
 ```
 
-Invalid JSON or an invalid datafile emits `invalid_datafile` with the stable message `could not parse datafile`.
+Invalid JSON or an invalid datafile emits `invalid_datafile` with the stable message `could not parse datafile`, without throwing or changing stored state. JSON input requires schema version `"1"`, string identity fields, a nonempty locale, and object maps for `segments`, `messages`, and `translations`. Optional `formats` must be an object and `direction` must be `ltr` or `rtl`. Typed datafiles also validate schema version, locale, and direction.
 
 ### Merge by default
 
-When a datafile already exists for the incoming locale, `setDatafile()` shallow-merges `segments`, `messages`, and `translations`. Incoming identity fields and formats win, while an omitted incoming direction preserves the existing direction.
+When a datafile already exists for the incoming locale, `setDatafile()` merges `segments`, `messages`, and `translations` by key. Incoming identity fields win, while an omitted incoming direction preserves the existing direction. Formats merge by family and preset name: an incoming preset replaces the whole stored preset of the same name. Omitted formats, families, and presets remain available.
 
 This supports loading several target datafiles for one locale on demand:
 
@@ -343,7 +343,7 @@ try m.setLocale("nl-NL")
 print(m.getLocale() ?? "")
 ```
 
-`setLocale()` requires a loaded datafile for that locale. A locale supplied to `MessagevisorOptions` can still be used with default translations and formats before a datafile arrives.
+`setLocale()` requires a loaded datafile for that locale. A missing datafile emits `missing_datafile` and throws without changing state. A locale supplied to `MessagevisorOptions` can still be used with default translations and formats before a datafile arrives. When an initial datafile is supplied, its locale takes precedence over the constructor locale.
 
 ### Per-call locale
 
@@ -382,6 +382,8 @@ m.setTimeZone("Europe/Amsterdam")
 
 Per-call time zone and currency are available in both `TranslateOptions` and `EvaluationOptions`.
 
+Time zone precedence is the call option, named preset, instance setting, then the host default captured once for the root and shared with children. This applies to direct date, time, and range helpers as well as ICU messages, including bare date and time arguments and date or time skeletons. A bare time includes hours, minutes, and seconds. Call options do not change instance state.
+
 ## Formatting
 
 The ICU module supports common authored ICU messages:
@@ -395,6 +397,20 @@ try m.formatMessage(
 ```
 
 It supports nested `plural`, `selectordinal`, and `select`, exact plural branches, offsets, apostrophe escaping, simple interpolation, and named number/date/time presets.
+
+Missing arguments in the selected branch throw and emit `invalid_message`. Arguments inside quoted text or unselected branches are not evaluated. Exact plural branches compare the original value; category selection and `#` use the value after subtracting any offset. An empty selected branch remains empty.
+
+The built in number styles `percent` and `integer` work without project presets. An explicitly named preset takes precedence over a built in style. Supported number skeleton tokens include `currency/USD` (or another currency code), `percent`, `precision-integer`, fixed fraction patterns such as `.00##`, `group-off`, `group-auto`, `sign-always`, `sign-never`, `sign-except-zero`, `scientific`, `scale/100`, and currency display widths `unit-width-iso-code`, `unit-width-full-name`, and `unit-width-short`.
+
+```swift
+try m.formatMessage("{amount, number, ::currency/USD .00}", values: ["amount": .double(0.5)])
+```
+
+Unsupported number skeleton tokens emit `unsupported_formatter` and throw, followed by the usual `invalid_message` diagnostic. They never silently become plain decimal formatting. Number, date, and time presentation continues to use Foundation locale data.
+
+Date and time presets can combine `dateStyle` with `timeStyle`, or date fields with time fields. Both direct helpers and ICU arguments preserve the complete preset. `hour12` takes precedence over `hourCycle` when both are supplied.
+
+An explicit `dayPeriod` uses Foundation's flexible day periods and the requested short, long, or narrow width. This can produce a phrase such as “in the morning” rather than AM or PM. Exact wording remains platform dependent.
 
 Timezone-qualified ISO strings, numeric Unix epoch milliseconds, and native `Date` values can be used for date/time arguments:
 
@@ -429,7 +445,20 @@ let parts = try m.formatNumberToParts(1234.5)
 // [MessagevisorFormatPart(type: "literal", value: "1,234.5")]
 ```
 
+Every `ToParts` helper returns one `literal` part containing its native formatted result, including list punctuation and conjunctions, and emits `unsupported_formatter`. Missing named presets emit `missing_format` and use the native default format.
+
 Supported display-name types are `language`, `region`, `script`, and `currency`.
+
+Plural categories use the complete cardinal and ordinal rules generated from [Unicode CLDR 48.2](https://github.com/unicode-org/cldr-json/tree/48.2.0), including regional inheritance. Direct helpers and ICU messages share these rules. Negative numbers use their absolute value; nonfinite numbers select `other` without trapping.
+
+Visible fraction and significant digits affect grammatical category selection:
+
+```swift
+try m.formatPlural(1, formatOptions: ["minimumFractionDigits": .int(2)], locale: "en")
+// → "other", because the plural operand is 1.00
+```
+
+Fraction and significant digit limits are validated. Advanced plural rounding options that Foundation cannot map here emit `unsupported_formatter`; the default rounding mode is used. The pinned rules can be regenerated using `scripts/generate-plural-rules.mjs`, which updates the generated source, tests from Unicode's published samples, and Unicode licence directly. See `UNICODE-LICENSE.txt` for the data licence.
 
 ### Format precedence
 
@@ -618,6 +647,8 @@ let m = createMessagevisor(
 
 Return `nil` from `format` or `transform` to preserve the current value.
 
+Constructor modules run setup after the initial datafile and defaults are ready, before `sdk_initialized`. Exceptions from either `format` or `transform` emit `invalid_message` with the module name and `details` containing the hook, effective locale, source, and message key, then rethrow the original error. Each error diagnostic emits one error event even when the diagnostic handler filters it out. Children own their evaluation diagnostics and error events.
+
 ### Setup API
 
 `setup` receives a `MessagevisorModuleApi` with:
@@ -705,6 +736,10 @@ Closing clears event and diagnostic subscriptions and closes root-owned modules 
 
 Repeated or concurrent calls to `close()` await the same cleanup operation. Modules are closed only once, and every caller receives the same aggregate failure when cleanup fails.
 
+A module's close callback may start another close request, but must not await its own enclosing cleanup operation. Independent callers continue waiting for shared completion. Cleanup after a failed module setup is registered before observers receive `module_setup_error`, so an observer's close request also waits for that cleanup.
+
+Removing a root module also removes its diagnostic subscriptions and cached APIs from live children. Retained APIs cannot register new subscriptions or resolvers after removal. Closing one child clears only that child's subscriptions and does not close the parent's modules.
+
 Do not use an instance after closing it.
 
 ## Apple platform behavior
@@ -716,7 +751,7 @@ Important platform notes:
 - Formatter caches are bounded and shared with child instances.
 - Public operations are synchronized for safe access from multiple threads. Public callback types are `@Sendable`. Callback implementations must synchronize mutable captured state and should avoid long-running work on the caller's thread.
 - Foundation does not expose JavaScript-compatible tokenized formatter parts; `ToParts` methods use a simplified representation.
-- Unsupported formatter capabilities are non-fatal and use `unsupported_formatter` where the SDK can identify them.
+- Unsupported formatter capabilities use `unsupported_formatter` where the SDK can identify them. Documented native fallbacks remain usable; unsupported ICU number skeleton tokens throw rather than discard their meaning.
 - Invalid explicit options, such as a malformed currency code or unknown time zone, emit `invalid_format` and throw a `MessagevisorError`.
 - Compact notation uses Foundation's locale data. Foundation does not expose separate short and long compact styles, so `compactDisplay: long` emits `unsupported_formatter` and uses the native compact form.
 - Rich ICU callback values are a JavaScript/framework feature; Swift translation results are strings.
@@ -761,6 +796,8 @@ swift run messagevisor-swift examples \
 
 The runner shells out to the project's installed `npx messagevisor` CLI for source loading and datafile generation, then performs evaluations in Swift. Every assertion is compared; the runner never skips native formatting cases. `--normalizeSpaces` treats ordinary spaces, no-break spaces (`U+00A0`), and narrow no-break spaces (`U+202F`) as equivalent, matching the Java runner and keeping fixtures readable. All other Apple Foundation differences must be recorded explicitly with `expectedByRuntime.swift`.
 
+Install only the modules enabled by the source project. The project 1 integration targets use ICU alone. Adding interpolation afterwards processes quoted placeholders a second time and changes their meaning. Swift dictionaries treat explicit names such as `__proto__`, `constructor`, and `toString` as ordinary keys in datafiles, defaults, context, and format presets.
+
 <!-- MESSAGEVISOR_DOCS_END -->
 
 ## Development
@@ -774,6 +811,17 @@ make strict-concurrency
 ```
 
 The strict concurrency build compiles every package product in Swift 6 language mode while the published package keeps its Swift 5.9 tools baseline.
+
+Regenerate the pinned Unicode CLDR plural rules with Node.js 24:
+
+```sh
+node scripts/generate-plural-rules.mjs
+node scripts/generate-plural-rules.mjs --check
+```
+
+Both commands fetch the same versioned Unicode inputs. Generation updates only `Sources/Messagevisor/CLDRPluralRules.swift`, `Tests/MessagevisorTests/CLDRPluralSamplesTests.swift`, and `UNICODE-LICENSE.txt`. Files whose content already matches are left untouched, including their timestamps. Paths are resolved relative to the script, so invoking it from another working directory is safe.
+
+`--check` compares the expected output with all three files without writing anything. It exits with status 1 and lists any missing or stale files; a successful check exits with status 0. Network or generation failures also fail the command. Neither Node.js nor network access is needed when building or using the SDK.
 
 Run the full reference project suite:
 

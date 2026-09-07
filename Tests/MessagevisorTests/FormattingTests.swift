@@ -2,6 +2,55 @@ import XCTest
 @testable import Messagevisor
 
 final class FormattingTests: XCTestCase {
+    func testDayPeriodWidthsUseNativeFlexibleDayPeriods() throws {
+        for locale in ["en-US", "fr-FR", "nl-NL", "ar-SA"] {
+            let sdk = createMessagevisor(.init(locale: locale, logLevel: .fatal))
+            for (width, template) in [("short", "hB"), ("long", "hBBBB"), ("narrow", "hBBBBB")] {
+                for hour in [8, 12, 19] {
+                    let date = Date(timeIntervalSince1970: Double(hour * 3600))
+                    let native = DateFormatter(); native.locale = Locale(identifier: locale); native.timeZone = TimeZone(identifier: "UTC")
+                    native.setLocalizedDateFormatFromTemplate(template)
+                    let options = EvaluationOptions(formats: .init(time: ["period": ["hour": .string("numeric"), "hour12": .bool(true), "dayPeriod": .string(width), "timeZone": .string("UTC")]]))
+                    XCTAssertEqual(try sdk.formatTime(date, preset: "period", options: options), native.string(from: date), "\(locale): \(width), \(hour)")
+                }
+            }
+        }
+    }
+
+    func testExplicitTwelveHourCycleDoesNotImplicitlyRequestFlexibleDayPeriods() throws {
+        let sdk = createMessagevisor(.init(locale: "es-ES", logLevel: .fatal))
+        let date = Date(timeIntervalSince1970: 8.5 * 3600)
+        let native = DateFormatter(); native.locale = Locale(identifier: "es-ES"); native.timeZone = TimeZone(identifier: "UTC")
+        native.setLocalizedDateFormatFromTemplate("hma")
+        for cycle: FormatOptions in [["hour12": .bool(true)], ["hourCycle": .string("h11")], ["hourCycle": .string("h12")]] {
+            var preset = cycle; preset["hour"] = .string("numeric"); preset["minute"] = .string("numeric"); preset["timeZone"] = .string("UTC")
+            XCTAssertEqual(try sdk.formatTime(date, preset: "clock", options: .init(formats: .init(time: ["clock": preset]))), native.string(from: date))
+        }
+    }
+
+    func testPluralOperandsPrecisionLocaleFallbackAndNonFiniteValues() throws {
+        let sdk = createMessagevisor(.init(locale: "en", logLevel: .fatal))
+        XCTAssertEqual(try sdk.formatPlural(1, formatOptions: ["minimumFractionDigits": .int(2)]), "other")
+        XCTAssertEqual(try sdk.formatPlural(1, formatOptions: ["minimumSignificantDigits": .int(3)]), "other")
+        XCTAssertEqual(try sdk.formatPlural(1.4, formatOptions: ["maximumFractionDigits": .int(0)]), "one")
+        XCTAssertEqual(try sdk.formatPlural(-1, locale: "en"), "one")
+        XCTAssertEqual(try sdk.formatPlural(0, locale: "pt-PT-u-nu-latn"), "other")
+        XCTAssertEqual(try sdk.formatPlural(0, locale: "pt_BR"), "one")
+        XCTAssertEqual(try sdk.formatPlural(0, locale: "pt-AO"), "other")
+        XCTAssertEqual(try sdk.formatPlural(0, locale: "pt-Latn-PT"), "other")
+        XCTAssertEqual(try sdk.formatPlural(2, locale: "cy-GB"), "two")
+        XCTAssertEqual(try sdk.formatPlural(1, locale: "ja"), "other")
+        for locale in ["ru", "ar", "en", "fr", "cy", "ja"] {
+            for value in [Double.nan, .infinity, -.infinity] {
+                XCTAssertEqual(try sdk.formatPlural(value, locale: locale), "other")
+                XCTAssertEqual(try sdk.formatPlural(value, locale: locale, ordinal: true), "other")
+            }
+        }
+        for options: FormatOptions in [["minimumFractionDigits": .int(-1)], ["maximumFractionDigits": .double(.nan)], ["minimumFractionDigits": .int(4), "maximumFractionDigits": .int(2)], ["maximumSignificantDigits": .int(0)]] {
+            XCTAssertThrowsError(try sdk.formatPlural(1, formatOptions: options))
+        }
+    }
+
     func testDefaultDatafileAndPerCallFormatsMerge() throws {
         let defaults = FormatPresets(number: ["amount": ["minimumFractionDigits": .int(1), "maximumFractionDigits": .int(1)]])
         let datafileFormats = FormatPresets(number: ["amount": ["minimumFractionDigits": .int(2), "maximumFractionDigits": .int(2)]])
@@ -17,7 +66,7 @@ final class FormattingTests: XCTestCase {
         let diagnostics = ConcurrencyBox<[MessagevisorDiagnostic]>([])
         let formats = FormatPresets(date: ["broken": ["timeZone": .string("Not/AZone")]])
         let sdk = createMessagevisor(.init(locale: "en-US", defaultFormats: ["en-US": formats], onDiagnostic: { diagnostic in diagnostics.mutate { $0.append(diagnostic) } }, logLevel: .debug))
-        XCTAssertThrowsError(try sdk.formatNumber(1, preset: "missing"))
+        XCTAssertEqual(try sdk.formatNumber(1, preset: "missing"), try sdk.formatNumber(1))
         XCTAssertEqual(diagnostics.value.last?.code, "missing_format")
 
         let parts = try sdk.formatNumberToParts(1234)
@@ -55,7 +104,7 @@ final class FormattingTests: XCTestCase {
         let sdk = createMessagevisor(.init(locale: "en-US", onDiagnostic: { diagnostic in diagnostics.mutate { $0.append(diagnostic) } }, logLevel: .debug))
 
         XCTAssertThrowsError(try sdk.formatNumber(1, formatOptions: ["style": .string("currency"), "currency": .string("INVALID")]))
-        XCTAssertThrowsError(try sdk.formatDate(Date(), preset: "broken"))
+        XCTAssertNoThrow(try sdk.formatDate(Date(), preset: "missing"))
         XCTAssertTrue(diagnostics.value.contains { $0.code == "invalid_format" && $0.details["type"] == .string("number") })
     }
 

@@ -33,6 +33,19 @@ public struct ConditionPredicate: Codable, Equatable, Sendable {
     public var value: MessagevisorValue?
     public var regexFlags: String?
 
+    private enum CodingKeys: String, CodingKey { case attribute, feature, experiment, `operator`, value, regexFlags }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        attribute = try container.decodeIfPresent(String.self, forKey: .attribute)
+        feature = try container.decodeIfPresent(String.self, forKey: .feature)
+        experiment = try container.decodeIfPresent(String.self, forKey: .experiment)
+        self.operator = try container.decode(String.self, forKey: .operator)
+        regexFlags = try container.decodeIfPresent(String.self, forKey: .regexFlags)
+        // An authored null is a comparison value, not an omitted field.
+        value = container.contains(.value) ? try container.decode(MessagevisorValue.self, forKey: .value) : nil
+    }
+
     public init(attribute: String, operator: String, value: MessagevisorValue? = nil, regexFlags: String? = nil) {
         self.attribute = attribute; self.feature = nil; self.experiment = nil
         self.operator = `operator`; self.value = value; self.regexFlags = regexFlags
@@ -165,7 +178,17 @@ public struct DatafileContent: Codable, Equatable, Sendable {
     }
 
     public static func fromJSON(_ json: String) throws -> Self { try fromData(Data(json.utf8)) }
-    public static func fromData(_ data: Data) throws -> Self { try JSONDecoder().decode(Self.self, from: data) }
+    public static func fromData(_ data: Data) throws -> Self {
+        guard let object = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? [String: Any],
+              object["schemaVersion"] as? String == "1",
+              let locale = object["locale"] as? String, !locale.isEmpty,
+              ["messagevisorVersion", "revision", "target"].allSatisfy({ object[$0] is String }),
+              ["segments", "messages", "translations"].allSatisfy({ object[$0] is [String: Any] }),
+              object["formats"] == nil || object["formats"] is [String: Any],
+              object["direction"] == nil || ["ltr", "rtl"].contains(object["direction"] as? String ?? "")
+        else { throw MessagevisorError("could not parse datafile") }
+        return try JSONDecoder().decode(Self.self, from: data)
+    }
     public func toJSON(pretty: Bool = false) throws -> String {
         let encoder = JSONEncoder(); if pretty { encoder.outputFormatting = [.prettyPrinted, .sortedKeys] }
         return String(decoding: try encoder.encode(self), as: UTF8.self)
