@@ -65,7 +65,7 @@ Add the package with Swift Package Manager:
 dependencies: [
     .package(
         url: "https://github.com/messagevisor/messagevisor-swift.git",
-        from: "0.1.0"
+        from: "0.2.0"
     )
 ]
 ```
@@ -841,7 +841,7 @@ make verify-consumers
 
 1. Update the installation version in this README, `messagevisorSwiftVersion` in the CLI, and the matching version in `CHANGELOG.md`.
 2. Merge the release commit into `main`.
-3. Tag the release with a semantic version using a `v` prefix, such as `v0.1.0`, and push the tag.
+3. Tag the release with a semantic version using a `v` prefix, such as `v0.2.0`, and push the tag.
 4. GitHub Actions validates the tag, tests the package, builds all public products from clean consumers, and verifies the release configuration.
 5. Create the corresponding GitHub release after the tag validation succeeds.
 
